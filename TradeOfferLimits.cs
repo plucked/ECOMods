@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using Eco.Core.Plugins;
 using Eco.Gameplay.Items;
 
@@ -21,17 +23,22 @@ namespace Eco.Mods
     public class TradeOfferLimitsConfig : Singleton<TradeOfferLimitsConfig>
     {
         [LocDescription("The minimum price for selling items to a store")]
-        public List<ItemPricePair> MinSellPrices { get; set; } = new();
+        public SerializedSynchronizedCollection<ItemPricePair> MinSellPrices { get; set; } = new();
 
         [LocDescription("The maximum price for buying items from a store")]
-        public List<ItemPricePair> MaxBuyPrices { get; set; } = new();
+        public SerializedSynchronizedCollection<ItemPricePair> MaxBuyPrices { get; set; } = new();
 
         [LocDescription("The interval in seconds in which the prices are checked and updated")]
         public int TickIntervalSeconds { get; set; } = 600;
 
         // lazy caching
-        public Dictionary<string, float> CachedMinSellPrices = new();
-        public Dictionary<string, float> CachedMaxBuyPrices = new();
+        private Dictionary<string, float> CachedMinSellPrices = new();
+        private Dictionary<string, float> CachedMaxBuyPrices = new();
+
+        public (Dictionary<string, float> minSellPrices, Dictionary<string, float> maxBuyPrices) GetCachedPrices()
+        {
+            return (CachedMinSellPrices, CachedMaxBuyPrices);
+        }
 
         public void UpdateCache()
         {
@@ -53,13 +60,20 @@ namespace Eco.Mods
     public class TradeOfferLimits : IModKitPlugin, IInitializablePlugin, IWorkerPlugin, IConfigurablePlugin
     {
         PluginConfig<TradeOfferLimitsConfig> config;
-        public IPluginConfig PluginConfig { get; }
+
+        public IPluginConfig PluginConfig
+        {
+            get => this.config;
+        }
+
         public ThreadSafeAction<object, string> ParamChanged { get; set; } = new();
 
         public object GetEditObject() => this.config.Config;
 
         public void OnEditObjectChanged(object o, string param)
         {
+            this.config.Config.UpdateCache();
+           this.SaveConfig();
         }
 
         string status = string.Empty;
@@ -124,16 +138,10 @@ namespace Eco.Mods
                     });
                 }
             }
-            
+
             config.Config.UpdateCache();
 
-            config.SaveAsync().ContinueWith(t =>
-            {
-                if (t.IsFaulted)
-                {
-                    Log.WriteError(new LocString($"Error saving config: {t.Exception}"));
-                }
-            });
+            this.SaveConfig();
         }
 
         private int activeControllerId = int.MinValue;
@@ -185,6 +193,8 @@ namespace Eco.Mods
         /// </summary>
         private bool LimitOfferPrices(bool sell, StoreItemData storeItemData)
         {
+            var (minSellPrices, maxBuyPrices) = config.Config.GetCachedPrices();
+
             bool changed = false;
             if (sell)
             {
@@ -197,7 +207,7 @@ namespace Eco.Mods
                             continue;
                         }
 
-                        if (config.Config.CachedMinSellPrices.TryGetValue(offer.Stack.Item.Name, out var priceLimit) &&
+                        if (minSellPrices.TryGetValue(offer.Stack.Item.Name, out var priceLimit) &&
                             offer.Price < priceLimit)
                         {
                             offer.Price = priceLimit;
@@ -218,7 +228,7 @@ namespace Eco.Mods
                             continue;
                         }
 
-                        if (config.Config.CachedMaxBuyPrices.TryGetValue(offer.Stack.Item.Name, out var priceLimit) &&
+                        if (maxBuyPrices.TryGetValue(offer.Stack.Item.Name, out var priceLimit) &&
                             offer.Price > priceLimit)
                         {
                             offer.Price = priceLimit;
